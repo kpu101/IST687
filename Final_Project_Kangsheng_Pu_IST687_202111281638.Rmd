@@ -1,0 +1,284 @@
+---
+title: "Final_Project_IST687_Kangsheng_Pu"
+author: "Kangsheng Pu"
+date: "11/28/2021"
+output: pdf_document
+---
+## Library, Dataset Loading
+This session contains all the necessary libraries to complete the projects
+```{r}
+library(ggplot2)
+library(dplyr)
+library(kernlab)
+library(caret)
+library(stringr)
+library(rpart)
+library(rpart.plot)
+df <- read.csv("https://intro-datascience.s3.us-east-2.amazonaws.com/Resort01.csv")
+```
+
+## Data cleaning - Variable transformation
+
+```{r}
+df_cleaned <- df
+df$Meal <- substring(df$Meal, 0 , 2)
+# Removing spaces for all string characters for easier reference
+
+# giving numeric values to meal
+df_cleaned <- mutate(df , Meal = ifelse(df$Meal == "SC", 0,
+                                      ifelse(df$Meal == "BB", 1,
+                                      ifelse(df$Meal == "HB", 2,
+                                      ifelse(df$Meal == "FB", 3,NA)))));
+
+df_cleaned$stayedDays <- df_cleaned$StaysInWeekendNights + df_cleaned$StaysInWeekNights
+
+# Remove spaces for depositType
+df_cleaned$DepositType <- str_replace_all(df_cleaned$DepositType, " ", "")
+
+# Assigning numeric value to deposit type
+df_cleaned <- mutate(df_cleaned , DepositType = 
+                       ifelse(df_cleaned$DepositType == "NoDeposit", 0,
+                       ifelse(df_cleaned$DepositType == "Refundable", 1,
+                       ifelse(df_cleaned$DepositType == "NonRefund", 2,
+                                      NA))));
+
+# Making new variable checking whether the assigned room is the same as booked room
+df_cleaned$AssignedReservedRoom <- ifelse(df_cleaned$ReservedRoomType == df_cleaned$AssignedRoomType, 1, 0)
+# 5 new dummy variables for market segment
+df_cleaned$cancellationRate <- ifelse(df_cleaned$PreviousBookingsNotCanceled + df_cleaned$PreviousCancellations == 0 , 0.5, df_cleaned$PreviousCancellations / (df_cleaned$PreviousCancellations + df_cleaned$PreviousBookingsNotCanceled))
+
+df_cleaned <- filter(df_cleaned, (df_cleaned$StaysInWeekNights +
+                                 df_cleaned$StaysInWeekendNights) >0 &
+                                is.na(df_cleaned$Meal)== FALSE &
+                                df_cleaned$Adults >0 )
+# Factorize the categorical value
+df_cleaned$IsCanceled <- as.factor(df_cleaned$IsCanceled)
+df_cleaned$Meal <- factor(df_cleaned$Meal, ordered = TRUE, levels = c(0,1,2,3))
+df_cleaned$IsRepeatedGuest <- as.factor(df_cleaned$IsRepeatedGuest)
+df_cleaned$AssignedReservedRoom <- as.factor(df_cleaned$AssignedReservedRoom)
+df_cleaned$DepositType <- factor(df_cleaned$DepositType, ordered = TRUE, levels = c(0,1,2))
+df_cleaned$CustomerType <- as.factor(df_cleaned$CustomerType)
+df_cleaned$MarketSegment <- as.factor(df_cleaned$MarketSegment)
+```
+
+## Data Cleaning - Outliers Removal
+```{r}
+numericColumns <- c("LeadTime", "StaysInWeekendNights", "StaysInWeekNights",
+                    "Adults","PreviousCancellations",
+                    "PreviousBookingsNotCanceled", "BookingChanges", 
+                    "RequiredCarParkingSpaces"  ,  "TotalOfSpecialRequests" )
+attach(df_cleaned)
+par(mfrow=c(4,3))
+for (eachColumn in numericColumns)
+{
+  boxplot(df_cleaned[,eachColumn], horizontal = TRUE,xlab = eachColumn)
+}
+attach(df_cleaned)
+par(mfrow=c(4,3))
+for (eachColumn in numericColumns)
+{
+  # Z score outlier removal
+  df_cleaned <- filter(df_cleaned , abs((df_cleaned[,eachColumn]- mean(df_cleaned[,eachColumn]))/sd(df_cleaned[,eachColumn]))<3)
+  boxplot(df_cleaned[,eachColumn], horizontal = TRUE,xlab = eachColumn)
+}
+
+df_cleaned <- filter(df_cleaned, df_cleaned$Children <=2)
+```
+
+## Exploratory Data Analysis: Logistic Regression
+
+## Selecting the signficant predictors.
+```{r, warning=FALSE}
+# Stepwise selection Adding
+# Those are the candidates of the possible explanatory variables
+candidates <- c("StaysInWeekendNights","StaysInWeekNights" , "Adults",
+                "Children", "Babies", "Meal" , "IsRepeatedGuest", "BookingChanges",
+                "DepositType", "CustomerType" , "RequiredCarParkingSpaces", 
+                "TotalOfSpecialRequests", "AssignedReservedRoom",
+                "cancellationRate","PreviousCancellations", 
+                "PreviousBookingsNotCanceled", "MarketSegment")
+trainList <- createDataPartition(y=df_cleaned$IsCanceled,p=.80,list=FALSE)
+trainData <- df_cleaned[trainList,]
+testData <- df_cleaned[-trainList,]
+
+glmFormulaFirst <- "IsCanceled ~ "
+glmFormulaFirst <- paste0(glmFormulaFirst, paste0(candidates, collapse =  " + "))
+glmFormulaFirst <- as.formula(glmFormulaFirst)
+logitFirst <- glm(glmFormulaFirst, data = trainData, family = "binomial")
+summary(logitFirst)
+failed <- c("StaysInWeekendNights", "StaysInWeekNights","Meal", "MarketSegment", "Babies", "RequiredCarParkingSpaces"
+            ,"PreviousBookingsNotCanceled", "CustomerType")
+
+for(eachColumn in failed)
+{
+  candidates <- candidates[!candidates %in% eachColumn]
+  glmFailFormula <- "IsCanceled ~ "
+  glmFailFormula <- paste0(glmFailFormula, paste0(candidates, collapse =  " + "))
+  glmFailFormula <- as.formula(glmFailFormula)
+  glmFailTest<- glm(glmFailFormula, data = trainData , family = "binomial")
+  # print(summary(glmFailTest))
+  # The code above is to help me check each stepwise remove summary so I could check where to stop
+  # in console. It's commented.
+}
+```
+## The final logistic model
+
+```{r}
+glmFormulaFirst <- "IsCanceled ~ "
+glmFormulaFirst <- paste0(glmFormulaFirst, paste0(candidates, collapse =  " + "))
+glmFormulaFirst <- as.formula(glmFormulaFirst)
+logitFirst <- glm(glmFormulaFirst, data = trainData, family = "binomial")
+summary(logitFirst)
+```
+
+## Loop through to get average accuracy of the logistic Prediction Model.
+
+```{r, warning=FALSE}
+possibilities <- c()
+# Generating 30 final accuracy values
+for (count in 1:30)
+{
+  resultAccuracy <- 0
+  # THe starting variables are a set of dummy variables that represent Market Segments
+  resultColumns <- c("LeadTime")
+  for(eachVariable in candidates)
+  {
+    trainList <- createDataPartition(y=df_cleaned$IsCanceled,p=.80,list=FALSE)
+    trainData <- df_cleaned[trainList,]
+    testData <- df_cleaned[-trainList,]
+    glmFormulaNull <- "IsCanceled ~ LeadTime"
+    glmFormulaAlter <- paste(glmFormulaNull, " + ", eachVariable)
+    glmFormulaNull <- as.formula(glmFormulaNull)
+    glmFormulaAlter <- as.formula(glmFormulaAlter)
+    mylogit_null <- glm(glmFormulaNull, data = trainData, family = "binomial")
+    mylogit_alternative <- glm(glmFormulaAlter, data = trainData, family = "binomial")
+    predLogNull <- predict(mylogit_null, testData, type = "response")
+    predLogNull <- ifelse(predLogNull > 0.5, 1, 0) 
+    predLogAlter <- predict(mylogit_alternative, testData, type = "response")
+    predLogAlter <- ifelse(predLogAlter > 0.5, 1, 0)
+    accuracyNull <- sum(diag(table(predLogNull,testData$IsCanceled)))/
+      sum(table(predLogNull,testData$IsCanceled))
+    accuracyAlter <- sum(diag(table(predLogAlter,testData$IsCanceled)))/
+      sum(table(predLogAlter,testData$IsCanceled))
+    if(accuracyNull < accuracyAlter)
+    {
+      resultColumns <- append(resultColumns, eachVariable)
+      resultAccuracy <- accuracyAlter
+    }
+    else{
+      resultAccuracy <= accuracyNull
+    }
+  }
+  possibilities <- append(possibilities, resultAccuracy)
+}
+
+```
+
+
+
+## Goodness of fit Test
+
+```{r}
+for (eachVariable in resultColumns)
+{
+  print(eachVariable)
+  print(chisq.test( testData[,eachVariable],testData$IsCanceled))
+}
+```
+## SVM Test
+
+```{r}
+SVMcandidates <- c("StaysInWeekendNights","StaysInWeekNights" , "Adults",
+                "Children", "Babies", "Meal" , "IsRepeatedGuest", "BookingChanges",
+                "DepositType", "CustomerType" , "RequiredCarParkingSpaces", 
+                "TotalOfSpecialRequests", "AssignedReservedRoom",
+                "cancellationRate","PreviousCancellations", 
+                "PreviousBookingsNotCanceled", "MarketSegment")
+SVMformula <- "IsCanceled ~ "
+SVMformula <- paste(SVMformula, paste(SVMcandidates, collapse = " + "))
+SVMformula <- as.formula(SVMformula)
+trainList <- createDataPartition(y=df_cleaned$IsCanceled,p=.80,list=FALSE)
+trainData <- df_cleaned[trainList,]
+testData <- df_cleaned[-trainList,]
+
+trctrl <- trainControl(method = "repeatedcv", number= 5, repeats = 3)
+
+svm.model1 <- train(SVMformula, data = trainData,
+                    method = "svmRadial",
+                    trControl = trctrl,
+                    preProcess= c("center", "scale"),
+                    tuneLength = 10)
+
+
+
+```
+
+## SVM test results
+```{r}
+predSVM <- predict(svm.model1,testData)
+plot(svm.model1)
+svm.model1
+```
+## Important factors
+```{r}
+varImp(svm.model1)
+```
+
+```{r}
+confusionSVM <- confusionMatrix(predSVM, testData$IsCanceled)
+confusionSVM
+```
+
+## Treebag Model
+```{r}
+cartTree <- rpart(SVMformula, data = df_cleaned)
+treeGraph<-prp(cartTree, faclen = 0, cex = 0.8, extra = 1)
+treeGraph
+```
+## Variables Significance
+```{r}
+varImp(cartTree)
+```
+
+## Treebag predictions and accuracy
+```{r}
+treeResult <- predict(cartTree, newdata=testData, type = "class")
+confusionTree <- confusionMatrix(treeResult, testData$IsCanceled)
+confusionTree
+```
+## Not included in the report: restricting data with customers only in PRT
+```{r}
+# Stepwise selection Adding
+# Those are the candidates of the possible explanatory variables
+candidates <- c("StaysInWeekendNights","StaysInWeekNights" , "Adults",
+                "Children", "Babies", "Meal" , "IsRepeatedGuest", "BookingChanges",
+                "DepositType", "CustomerType" , "RequiredCarParkingSpaces", 
+                "TotalOfSpecialRequests", "AssignedReservedRoom",
+                "cancellationRate","PreviousCancellations", 
+                "PreviousBookingsNotCanceled", "MarketSegment")
+trainList <- createDataPartition(y=df_cleaned$IsCanceled,p=.80,list=FALSE)
+trainData <- filter(df_cleaned[trainList,], Country == "PRT")
+testData <- filter(df_cleaned[-trainList,], Country == "PRT")
+
+glmFormulaFirstPRT <- "IsCanceled ~ "
+glmFormulaFirstPRT <- paste0(glmFormulaFirstPRT, paste0(candidates, collapse =  " + "))
+glmFormulaFirstPRT <- as.formula(glmFormulaFirstPRT)
+logitFirstPRT <- glm(glmFormulaFirstPRT, data = trainData, family = "binomial")
+summary(logitFirstPRT)
+failed <- c("StaysInWeekendNights", "StaysInWeekNights","Meal", "MarketSegment", "Babies", "RequiredCarParkingSpaces"
+            ,"PreviousBookingsNotCanceled", "CustomerType")
+
+for(eachColumn in failed)
+{
+  candidates <- candidates[!candidates %in% eachColumn]
+  glmFailFormula <- "IsCanceled ~ "
+  glmFailFormula <- paste0(glmFailFormula, paste0(candidates, collapse =  " + "))
+  glmFailFormula <- as.formula(glmFailFormula)
+  glmFailTest<- glm(glmFailFormula, data = trainData , family = "binomial")
+  # print(summary(glmFailTest))
+  # The code above is to help me check each stepwise remove summary so I could check where to stop
+  # in console. It's commented.
+}
+```
+
+
